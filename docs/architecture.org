@@ -162,10 +162,21 @@ Nyxt's documentation of internal pages warns that any third-party page can load 
 |---------+------------------+-------------------------------------------------+-------|
 | agent   | =make test=      | =tests/fake-claude=, a shell script             |    21 |
 | view    | =make test=      | the same                                        |    15 |
-| cockpit | =make nyxt-test= | Nyxt 5.1.0's core loaded from source, no window |    20 |
+| cockpit | =make nyxt-test= | Nyxt 5.1.0's core loaded from source, no window |    19 |
+| install | =make nyxt-install-test= | the same core, with ASDF set up like the packaged app |  1 |
 | agent   | =make real=      | the real program, three Haiku turns             |     1 |
 
 The cockpit tests replace the page with a list: every script the cockpit would run is collected and read. They prove what the page is told. They do not prove what the page then shows, how keys feel, or that focus lands where it should: that needs a window, and it is the first open item.
+
+** What the first run in the app found
+
+On 2026-NOVEMBER-24 the extension met the packaged macOS app of Nyxt 5.1.0 for the first time, and did not load. Every test above was green, because every test loads the cockpit by its path into a Nyxt that was itself loaded from source.
+
+The app differs in what ASDF sees. Its systems are immutable, and Nyxt's source is not on disk, so =*source-directory*= resolves to an empty path. =nyxt-source-registry= adds the source directory to ASDF's registry when the path is /not/ absolute, so in the app it adds =(:tree #P"")=. ASDF rejects that entry the first time any system is looked up, with =Invalid pathname #P"": Expected an absolute pathname=, and it leaves its registry empty, so the extensions directory is not searched afterwards either. Any extension loaded by name fails this way in that app, not only this one.
+
+The install lines of =README.org= put a registry function with the extensions directory alone in place of Nyxt's. =tests/run-install.lisp= reads those lines out of the README and runs them, the way Nyxt reads a config, in a Lisp arranged as the app is: immutable systems, no source on disk, the extension reachable only through the extensions directory. It first checks that the lookup fails without them, so the day Nyxt fixes this the test says the repair can go.
+
+It is a model of the app's ASDF setup, read from Nyxt's source and from the app's log. It is not the app. Whether the lines work in the app itself is known only once someone has run them there.
 
 * From here
 

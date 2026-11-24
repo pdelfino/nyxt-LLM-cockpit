@@ -9,6 +9,7 @@ source/agent/        the Claude Code program as a session. No Nyxt, no libraries
 source/view.lisp     a session as strings: HTML, status line, the page script
 source/cockpit.lisp  the only file that names Nyxt: mode, page, commands
 tests/               harness, agent-tests, view-tests (plain SBCL), cockpit-tests (inside Nyxt)
+tests/run-install.lisp  the README's install lines, in a Nyxt set up like the packaged app
 tests/fake-claude    a shell script that plays Claude Code for the tests
 .nyxt/               Nyxt's source at the pinned release, fetched by make nyxt-deps. Not committed
 ```
@@ -17,9 +18,9 @@ Lisp names are lowercase: the systems and packages are `nyxt-llm-cockpit`, `nyxt
 
 ## Gate
 
-`make check` before every commit: `make test` (plain SBCL) then `make nyxt-test` (inside Nyxt's core, no window). A compile warning fails it. `make real` drives the real Claude Code on Haiku and spends a little: run it when `source/agent/` changes, never in a loop.
+`make check` before every commit: `make test` (plain SBCL), `make nyxt-test` (inside Nyxt's core, no window), then `make nyxt-install-test` (the README's install lines, in a Nyxt whose ASDF is set up like the packaged app's). A compile warning fails it. `make real` drives the real Claude Code on Haiku and spends a little: run it when `source/agent/` changes, never in a loop.
 
-Nothing here can open a Nyxt window from a session. A change to what the page shows or how keys behave is not verified until Pedro has seen it in Nyxt; say so.
+Nothing here can open a Nyxt window from a session. A change to what the page shows or how keys behave is not verified until Pedro has seen it in Nyxt; say so. The same holds for the packaged app: the tests load the cockpit into a Nyxt built from source, and the first run in the macOS app failed on something they could not see (`docs/architecture.org`, "What the first run in the app found"). When the install lines of `README.org` change, `make nyxt-install-test` must stay green, and the change is not proven until it has run in the app.
 
 ## Rules
 

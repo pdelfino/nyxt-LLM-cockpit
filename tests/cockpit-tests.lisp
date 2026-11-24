@@ -98,13 +98,6 @@ ANSWER is what the user types at every permission question."
   (check-equal 'nyxt-llm-cockpit:cockpit-mode
                (nyxt:page-mode (gethash 'nyxt-llm-cockpit:claude nyxt::*nyxt-url-commands*))))
 
-(deftest the-install-line-of-the-readme-loads
-  ;; README.org tells the user to put this form in config.lisp.
-  (check (typep (nyxt:define-nyxt-user-system-and-load "nyxt-user/nyxt-llm-cockpit-proxy"
-                  :depends-on ("nyxt-llm-cockpit"))
-                'asdf:system))
-  (check (asdf:component-loaded-p (asdf:find-system "nyxt-llm-cockpit"))))
-
 (deftest commands-reach-the-mode
   (with-cockpit (mode log "hello")
     (let ((buffer (nyxt:buffer mode)))
@@ -126,7 +119,11 @@ ANSWER is what the user types at every permission question."
       (check-equal 'nyxt-llm-cockpit:send-prompt (binding nyxt/keyscheme:emacs "C-return"))
       (check-equal 'nyxt-llm-cockpit:send-prompt (binding nyxt/keyscheme:emacs "C-c C-c"))
       (check-equal 'nyxt-llm-cockpit:interrupt-claude (binding nyxt/keyscheme:emacs "C-c C-k"))
-      (check-equal 'nyxt-llm-cockpit:send-prompt (binding nyxt/keyscheme:vi-insert "C-return"))
+      ;; With vi keys the prompt is sent from the normal state. In the insert
+      ;; state Nyxt gives every key to the page, so nothing is bound there.
+      (check-equal 'nyxt-llm-cockpit:send-prompt (binding nyxt/keyscheme:vi-normal "C-return"))
+      (check-equal 'nyxt-llm-cockpit:interrupt-claude (binding nyxt/keyscheme:vi-normal "C-c"))
+      (check (not (binding nyxt/keyscheme:vi-insert "C-return")))
       ;; Plain letters are not bound: they are typed into the prompt.
       (check (not (binding nyxt/keyscheme:cua "y")))
       (check (not (binding nyxt/keyscheme:emacs "a"))))))

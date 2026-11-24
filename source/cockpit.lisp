@@ -128,12 +128,12 @@ NIL before the first draw.")
       (list
        "C-c C-c" 'send-prompt
        "C-c C-k" 'interrupt-claude)
+      ;; Nothing is bound for vi's insert state: there Nyxt hands every key to
+      ;; the page, whatever a mode binds. With vi keys a prompt is sent from
+      ;; the normal state, which takes "C-return" from the default scheme.
       keyscheme:vi-normal
       (list
-       "C-c" 'interrupt-claude)
-      keyscheme:vi-insert
-      (list
-       "C-return" 'send-prompt))))
+       "C-c" 'interrupt-claude))))
   (:toggler-command-p nil))
 
 ;;; Talking to the page
