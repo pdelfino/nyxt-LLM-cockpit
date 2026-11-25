@@ -178,6 +178,26 @@ The install lines of =README.org= put a registry function with the extensions di
 
 It is a model of the app's ASDF setup, read from Nyxt's source and from the app's log. It is not the app. Whether the lines work in the app itself is known only once someone has run them there.
 
+** What the second run in the app found
+
+Later the same day the app was started again, with the repair in front of the two forms that had failed: =asdf:load-asd= on this repository's =.asd= file, then =asdf:load-system=. This time the extension compiled and loaded, and the =claude= page opened as the first buffer. So the repair works in the app. The README's last install line, which finds the extension through the extensions directory, has still run only in the model.
+
+That run also carried a probe: a thread in the trial's config that asks the page every few seconds what it holds (counts, sizes and states, never text) and writes the answer to Nyxt's log when it changes. One second after the page loaded it answered:
+
+#+begin_example
+{"ready":"complete","runtime":"object","input":true,"typed":0,"focus":"cockpit-input",
+ "status":"ready · haiku · ~/projects/nyxt-LLM-cockpit","state":"state-ready","entries":[],
+ "view":[1576,933],"inputBox":[320,832,960,96],"colors":["rgb(248, 248, 248)","rgb(0, 0, 0)"]}
+#+end_example
+
+What that shows, in the app and not in a model:
+
+- The page drew in the theme's colors, with the status line and the box (960 by 96) at the bottom of a 1576 by 933 view.
+- The page script was installed by one asynchronous call from Lisp, and a second one, =focus=, made the box the page's focused element. The page has no =autofocus=, so nothing else could have.
+- A synchronous call made off the interface thread comes back with a string. The probe is such a call, and so is the one =send-prompt= uses to take the typed text.
+
+What it does not show: the answer stayed the same for the hour the probe ran, and Claude Code has no session on record for that directory, so no prompt was sent. Typing, a prompt sent from a window, the transcript as it streams, the permission question and every key are still unchecked. The page has been read by a probe, not looked at: whether the keyboard reaches the box, and how it all looks, nobody has reported.
+
 * From here
 
 In the order that makes the next step cheapest. Each is a slice with its own files.

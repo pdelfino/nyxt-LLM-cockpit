@@ -19,8 +19,8 @@ A first slice, written on 2026-NOVEMBER-24 against Nyxt 5.1.0 (the latest releas
 | Ask before a tool runs, allow once or for a session | Works. Same tests                                             |
 | Interrupt a turn                                    | Works. Same tests                                             |
 | The buffer, its mode, its commands and keys         | Tested inside Nyxt's core with no renderer                    |
-| Loading into the Nyxt 5.1.0 macOS app               | The first try failed on a fault in how that app sets up ASDF. The install lines below work around it. They are tested in a model of the app, *not yet in the app* |
-| The same in a real Nyxt window                      | *Not checked yet.* Nothing here has been seen on a screen     |
+| Loading into the Nyxt 5.1.0 macOS app               | The first try failed on a fault in how that app sets up ASDF. With the repair in the install lines below, the extension loaded in the app on 2026-NOVEMBER-24. The last install line, which finds the extension in the extensions directory, is tested in a model of the app, *not yet in the app* |
+| The same in a real Nyxt window                      | The page loads in the app, with its box in place and focused (read by a probe on 2026-NOVEMBER-24, not by eye). *No prompt has been sent from a window yet*: sending, the transcript and the permission question are unchecked |
 | Sessions list and resume, Markdown, side panel, MCP | Not started. See [[file:docs/architecture.org][docs/architecture.org]]                         |
 
 * Install
@@ -52,7 +52,7 @@ Then load it from =~/.config/nyxt/config.lisp=:
   :depends-on ("nyxt-llm-cockpit"))
 #+end_src
 
-Without the first lines, the macOS app of Nyxt 5.1.0 stops reading the config with =Invalid pathname #P"": Expected an absolute pathname= (the line is in Nyxt's log) and the extension is not loaded. =make nyxt-install-test= runs these exact lines in a Nyxt set up like that app.
+Without the first lines, the macOS app of Nyxt 5.1.0 stops reading the config with =Invalid pathname #P"": Expected an absolute pathname= (the line is in Nyxt's log) and the extension is not loaded. =make nyxt-install-test= runs these exact lines in a Nyxt set up like that app. In the app itself the repair has run once, with the extension loaded by its path. The last line has run only in the model.
 
 * Use
 
