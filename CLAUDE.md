@@ -32,6 +32,7 @@ Nothing here can open a Nyxt window from a session. A change to what the page sh
 - `source/agent/` and `source/view.lisp` depend on nothing but ASDF's UIOP and SBCL. `source/cockpit.lisp` may use what the stock Nyxt binary already carries, and nothing else.
 - One file knows the program's frames: `source/agent/session.lisp`. One file knows Nyxt: `source/cockpit.lisp`.
 - New behavior gets a test in the cheapest layer that can hold it. A new frame gets a scenario in `tests/fake-claude`, cut down from what the real program printed.
+- Keys are in Nyxt's notation: `S-` is super (the Command key on a Mac) and `s-` is shift, the reverse of Emacs. A new binding gets a press through `nyxt:dispatch-key-press`, as `return-sends-what-is-typed` does, not only a lookup in the keymap.
 - The Nyxt release is pinned by `NYXT_VERSION` in the `Makefile`. Moving it is its own commit, with `make nyxt-test` green on the new release.
 - Nothing is filed or pushed to `atlas-engineer` without Pedro's word.
 - Docs are Org. Markdown only where a tool requires it (this file, GitHub issue bodies). No em-dashes anywhere, comments included. Dates for people carry the month name.

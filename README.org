@@ -20,7 +20,7 @@ A first slice, written on 2026-NOVEMBER-24 against Nyxt 5.1.0 (the latest releas
 | Interrupt a turn                                    | Works. Same tests                                             |
 | The buffer, its mode, its commands and keys         | Tested inside Nyxt's core with no renderer                    |
 | Loading into the Nyxt 5.1.0 macOS app               | The first try failed on a fault in how that app sets up ASDF. With the repair in the install lines below, the extension loaded in the app on 2026-NOVEMBER-24. The last install line, which finds the extension in the extensions directory, is tested in a model of the app, *not yet in the app* |
-| The same in a real Nyxt window                      | The page loads in the app, with its box in place and focused (read by a probe on 2026-NOVEMBER-24, not by eye). *No prompt has been sent from a window yet*: sending, the transcript and the permission question are unchecked |
+| The same in a real Nyxt window                      | Seen on 2026-NOVEMBER-25: the page draws as designed and typing reaches the box. A first try to send did not go through, and Return was made the send key after it. *No prompt has gone through from a window yet*: the transcript and the permission question are unchecked |
 | Sessions list and resume, Markdown, side panel, MCP | Not started. See [[file:docs/architecture.org][docs/architecture.org]]                         |
 
 * Install
@@ -56,13 +56,15 @@ Without the first lines, the macOS app of Nyxt 5.1.0 stops reading the config wi
 
 * Use
 
-| Command                | Keys                             | What it does                                |
-|------------------------+----------------------------------+---------------------------------------------|
-| =claude=               |                                  | Open the cockpit buffer                     |
-| =send-prompt=          | =C-return=, Emacs =C-c C-c=      | Send what is typed                          |
-| =interrupt-claude=     | Emacs =C-c C-k=, vi normal =C-c= | Stop the turn that is running               |
-| =new-claude-session=   |                                  | End the conversation and start an empty one |
-| =set-claude-directory= |                                  | Choose the directory Claude Code works in   |
+| Command                | Keys                                             | What it does                                |
+|------------------------+--------------------------------------------------+---------------------------------------------|
+| =claude=               |                                                  | Open the cockpit buffer                     |
+| =send-prompt=          | =return=, =C-return=, =S-return=, Emacs =C-c C-c= | Send what is typed                          |
+| =interrupt-claude=     | Emacs =C-c C-k=, vi normal =C-c=                 | Stop the turn that is running               |
+| =new-claude-session=   |                                                  | End the conversation and start an empty one |
+| =set-claude-directory= |                                                  | Choose the directory Claude Code works in   |
+
+Return sends. Shift-Return starts a new line in the box. The keys are in Nyxt's notation, where =S-= is super (the Command key on a Mac) and =s-= is shift, so =S-return= is Command-Return.
 
 With vi keys, send from the normal state: in the insert state Nyxt gives every key to the page.
 

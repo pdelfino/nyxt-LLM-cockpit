@@ -162,7 +162,7 @@ Nyxt's documentation of internal pages warns that any third-party page can load 
 |---------+------------------+-------------------------------------------------+-------|
 | agent   | =make test=      | =tests/fake-claude=, a shell script             |    21 |
 | view    | =make test=      | the same                                        |    15 |
-| cockpit | =make nyxt-test= | Nyxt 5.1.0's core loaded from source, no window |    19 |
+| cockpit | =make nyxt-test= | Nyxt 5.1.0's core loaded from source, no window |    20 |
 | install | =make nyxt-install-test= | the same core, with ASDF set up like the packaged app |  1 |
 | agent   | =make real=      | the real program, three Haiku turns             |     1 |
 
@@ -197,6 +197,16 @@ What that shows, in the app and not in a model:
 - A synchronous call made off the interface thread comes back with a string. The probe is such a call, and so is the one =send-prompt= uses to take the typed text.
 
 What it does not show: the answer stayed the same for the hour the probe ran, and Claude Code has no session on record for that directory, so no prompt was sent. Typing, a prompt sent from a window, the transcript as it streams, the permission question and every key are still unchecked. The page has been read by a probe, not looked at: whether the keyboard reaches the box, and how it all looks, nobody has reported.
+
+** What the third run found: the send key
+
+On 2026-NOVEMBER-25 the window was looked at for the first time. The page is as designed, and typing reaches the box. Sending did not work.
+
+The logs of that run say the send command never ran: no line from it, no session, the text still in the box. At the time one chord sent, Control-Return. Given that chord, Nyxt's own dispatcher runs the command, in the tests. So either another key was pressed, as Return is in every other chat box, or the chord does not reach Nyxt in the app. Which one is not settled. The next run records the keys Nyxt is given.
+
+What changed is the key. Return sends, as it does in Claude Code and wherever else people type to a model, and Control-Return and Command-Return send too. Shift-Return and Option-Return are not bound, so Nyxt passes them on and the box starts a new line. Nyxt takes a bound key before the page sees it, and it does not fall back from an unbound chord to the plain key, which is what makes this split possible without the page calling Lisp.
+
+=return-sends-what-is-typed= now presses the keys through =dispatch-key-press=, the function a renderer calls, in a buffer with the default keyscheme, and follows the prompt to the program. The first version of the change failed that test: in Nyxt's notation =S-= is super and =s-= is shift, the reverse of Emacs, and =s-return= had bound Shift-Return. A lookup in the mode's keymap alone would not have caught it.
 
 * From here
 

@@ -45,11 +45,17 @@ Tests bind it to see what the page would be told.")
   "When a function, it is called with a mode and a request instead of the prompt buffer.
 It returns what the user would have typed. Tests bind it.")
 
+(defvar *prompt-taker* nil
+  "When a function, it is called with a mode instead of asking the page for the prompt.
+It returns what would be typed in the box. Tests bind it.")
+
 (define-mode cockpit-mode ()
   "Talk to Claude Code in this buffer.
 The conversation is drawn as a document: what you sent, what Claude said, the
 tools it asked for and what they returned. Claude Code runs as a separate
 program with your own login and settings.
+
+Return sends what is typed. Shift-Return starts a new line.
 
 Before a tool runs, the prompt buffer asks. Type y to allow it once, or a to
 allow the same thing for the rest of the session. Anything else is no."
@@ -121,16 +127,24 @@ NIL before the first draw.")
     :documentation "Hook that ends the program when Nyxt quits.")
    (keyscheme-map
     (define-keyscheme-map "cockpit-mode" ()
+      ;; Return sends, as it does in Claude Code and in every chat box. Nyxt
+      ;; takes a bound key before the page sees it, and it does not fall back
+      ;; from an unbound key with a modifier to the plain one. So Shift-Return
+      ;; and Option-Return reach the box and start a new line there.
+      ;; In Nyxt's notation "S-" is super, the Command key on a Mac, and "s-"
+      ;; is shift. So "S-return" is Command-Return, and "s-return" stays unbound.
       keyscheme:default
       (list
-       "C-return" 'send-prompt)
+       "return" 'send-prompt
+       "C-return" 'send-prompt
+       "S-return" 'send-prompt)
       keyscheme:emacs
       (list
        "C-c C-c" 'send-prompt
        "C-c C-k" 'interrupt-claude)
       ;; Nothing is bound for vi's insert state: there Nyxt hands every key to
       ;; the page, whatever a mode binds. With vi keys a prompt is sent from
-      ;; the normal state, which takes "C-return" from the default scheme.
+      ;; the normal state, which takes the keys of the default scheme.
       keyscheme:vi-normal
       (list
        "C-c" 'interrupt-claude))))
@@ -240,17 +254,20 @@ This waits for the user, so it runs on its own thread."
           ;; user cannot see means nothing. The model is told to ask in text.
           (nyxt-llm-cockpit/agent:respond-permission (session mode) request :deny
                                                :message *questions-as-text*)
-          (let ((typed (funcall (or *permission-asker* #'ask-in-prompt-buffer)
-                                mode request)))
-            (nyxt-llm-cockpit/agent:respond-permission
-             (session mode) request
-             (nyxt-llm-cockpit/view:parse-permission-answer typed)))))))
+          (let* ((typed (funcall (or *permission-asker* #'ask-in-prompt-buffer)
+                                 mode request))
+                 (decision (nyxt-llm-cockpit/view:parse-permission-answer typed)))
+            (log:debug "Cockpit: the answer about ~a was ~(~a~)."
+                       (nyxt-llm-cockpit/agent:request-tool-name request) decision)
+            (nyxt-llm-cockpit/agent:respond-permission (session mode) request decision))))))
 
 (-> permission-requested (cockpit-mode nyxt-llm-cockpit/agent:permission-request) t)
 (defun permission-requested (mode request)
   "Handle a new permission REQUEST on a thread of its own.
 The caller is the thread that reads the program. It must neither wait for the
 user nor write to the program."
+  (log:debug "Cockpit: the program asks to run ~a."
+             (nyxt-llm-cockpit/agent:request-tool-name request))
   (refresh-status mode)
   (let ((asker *permission-asker*)
         (sink *script-sink*))
@@ -264,12 +281,16 @@ user nor write to the program."
   "Draw what EVENT changed. This is the session's listener."
   (case event
     (:entry-added
+     (log:debug "Cockpit: a new entry, ~(~a~)." (type-of (first arguments)))
      (page-call mode "append" (nyxt-llm-cockpit/view:entry-html (first arguments))))
     (:entry-changed
      (draw-entry mode (first arguments)))
     (:permission-requested
      (permission-requested mode (first arguments)))
     ((:state :usage :turn-ended :permission-settled)
+     (unless (eq event :usage)
+       (log:debug "Cockpit: ~(~a~)~@[ ~(~a~)~]." event
+                  (and (eq event :state) (first arguments))))
      (refresh-status mode)))
   nil)
 
@@ -278,6 +299,8 @@ user nor write to the program."
 (-> make-session (cockpit-mode) nyxt-llm-cockpit/agent:session)
 (defun make-session (mode)
   "Return a new session with MODE's settings, followed by MODE's page."
+  (log:debug "Cockpit: a new session. Program ~s, directory ~s, model ~s."
+             (program mode) (effective-directory mode) (model mode))
   (let ((session (make-instance 'nyxt-llm-cockpit/agent:session
                                 :program (program mode)
                                 :working-directory (effective-directory mode)
@@ -487,7 +510,7 @@ The program is its own process, so it outlives the buffer unless it is ended."
                    (status-line mode))
              (:textarea :id "cockpit-input"
                         :spellcheck "false"
-                        :placeholder "Ask Claude. Control-Return sends."))))))
+                        :placeholder "Ask Claude. Return sends, Shift-Return starts a new line."))))))
 
 (define-internal-page-command-global claude ()
     (buffer "*Claude*" 'nyxt-llm-cockpit:cockpit-mode)
@@ -500,13 +523,17 @@ The program is its own process, so it outlives the buffer unless it is ended."
 (defun typed-prompt (mode)
   "Take what is typed in MODE's page and return it, or NIL when it is blank."
   (let* ((buffer (buffer mode))
-         (value (and buffer
-                     (not (dead-buffer-p buffer))
-                     (ffi-buffer-evaluate-javascript
-                      buffer
-                      "window.llmCockpit ? window.llmCockpit.take() : \"\"")))
+         (value (cond
+                  (*prompt-taker*
+                   (funcall *prompt-taker* mode))
+                  ((and buffer (not (dead-buffer-p buffer)))
+                   (ffi-buffer-evaluate-javascript
+                    buffer
+                    "window.llmCockpit ? window.llmCockpit.take() : \"\""))))
          (text (and (stringp value)
                     (string-trim '(#\Space #\Tab #\Newline #\Return) value))))
+    (log:debug "Cockpit: the page gave ~:[no text~;~:*~d character~:p~]."
+               (and (stringp value) (length value)))
     (and text (plusp (length text)) text)))
 
 (-> submit-prompt (cockpit-mode string) boolean)
@@ -527,12 +554,17 @@ The program is its own process, so it outlives the buffer unless it is ended."
 
 (define-command send-prompt ((mode cockpit-mode))
   "Send what is typed in the cockpit to Claude."
+  (log:debug "Cockpit: send-prompt runs.")
   (let ((text (typed-prompt mode)))
     (if text
-        (unless (submit-prompt mode text)
-          ;; Nothing typed is lost when it could not be sent.
-          (page-call mode "restore" text))
-        (echo "Type a prompt first."))))
+        (let ((sent (submit-prompt mode text)))
+          (log:debug "Cockpit: the prompt was ~:[not sent~;sent~]." sent)
+          (unless sent
+            ;; Nothing typed is lost when it could not be sent.
+            (page-call mode "restore" text)))
+        (echo "Type a prompt first."))
+    ;; The next prompt can be typed at once, wherever the focus had gone.
+    (page-call mode "focus")))
 
 (define-command interrupt-claude ((mode cockpit-mode))
   "Stop the turn Claude is running."

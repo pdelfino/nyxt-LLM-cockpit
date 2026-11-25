@@ -115,18 +115,71 @@ ANSWER is what the user types at every permission question."
     (flet ((binding (keyscheme keyspec)
              (setf (nyxt:keyscheme (nyxt:buffer mode)) keyscheme)
              (nkeymaps:lookup-key keyspec (nyxt:keymap mode))))
-      (check-equal 'nyxt-llm-cockpit:send-prompt (binding nyxt/keyscheme:cua "C-return"))
-      (check-equal 'nyxt-llm-cockpit:send-prompt (binding nyxt/keyscheme:emacs "C-return"))
+      ;; Return sends, and so do the two chords a hand may reach for first:
+      ;; Control-Return, and Command-Return on a Mac. Nyxt writes super, the
+      ;; Command key, as "S-" and shift as "s-".
+      (dolist (keyscheme (list nyxt/keyscheme:cua nyxt/keyscheme:emacs nyxt/keyscheme:vi-normal))
+        (dolist (keyspec '("return" "C-return" "S-return"))
+          (check-equal 'nyxt-llm-cockpit:send-prompt (binding keyscheme keyspec))))
       (check-equal 'nyxt-llm-cockpit:send-prompt (binding nyxt/keyscheme:emacs "C-c C-c"))
       (check-equal 'nyxt-llm-cockpit:interrupt-claude (binding nyxt/keyscheme:emacs "C-c C-k"))
+      (check-equal 'nyxt-llm-cockpit:interrupt-claude (binding nyxt/keyscheme:vi-normal "C-c"))
+      ;; Shift-Return and Option-Return are left to the page: a new line.
+      (check (not (binding nyxt/keyscheme:cua "s-return")))
+      (check (not (binding nyxt/keyscheme:cua "M-return")))
+      (check (not (binding nyxt/keyscheme:emacs "s-return")))
       ;; With vi keys the prompt is sent from the normal state. In the insert
       ;; state Nyxt gives every key to the page, so nothing is bound there.
-      (check-equal 'nyxt-llm-cockpit:send-prompt (binding nyxt/keyscheme:vi-normal "C-return"))
-      (check-equal 'nyxt-llm-cockpit:interrupt-claude (binding nyxt/keyscheme:vi-normal "C-c"))
+      (check (not (binding nyxt/keyscheme:vi-insert "return")))
       (check (not (binding nyxt/keyscheme:vi-insert "C-return")))
       ;; Plain letters are not bound: they are typed into the prompt.
       (check (not (binding nyxt/keyscheme:cua "y")))
       (check (not (binding nyxt/keyscheme:emacs "a"))))))
+
+(defun press (mode value &rest modifiers)
+  "Give Nyxt's own dispatcher a key press in MODE's buffer, as a renderer does.
+Return whether Nyxt took the key. NIL means the key goes on to the page."
+  (nyxt:dispatch-key-press (nyxt:buffer mode) nil
+                           (nkeymaps:make-key :value value
+                                              :modifiers modifiers
+                                              :status :pressed)))
+
+(deftest return-sends-what-is-typed
+  ;; The whole way a key travels inside Nyxt: its dispatcher, the keymap of the
+  ;; buffer's keyscheme, the command, the box, the program, the page.
+  (with-cockpit (mode log "hello")
+    (let ((box "say hello"))
+      (setf nyxt-llm-cockpit::*prompt-taker*
+            (lambda (mode)
+              (declare (ignore mode))
+              (prog1 box (setf box ""))))
+      (unwind-protect
+           (progn
+             (check-equal nyxt/keyscheme:cua (nyxt:keyscheme (nyxt:buffer mode)))
+             ;; Shift-Return is not Nyxt's: the page gets it, and nothing is sent.
+             (check (not (press mode "return" "shift")))
+             (check (not (press mode "a")))
+             (check (null (cockpit-session mode)))
+             (check-equal "say hello" box)
+             ;; Return is taken by Nyxt and runs the command on a thread.
+             (check (press mode "return"))
+             (check (wait-until (lambda ()
+                                  (and (cockpit-session mode)
+                                       (eq :idle (session-state (cockpit-session mode)))
+                                       (plusp (session-turns (cockpit-session mode)))))
+                                :timeout 10))
+             (check-equal "" box)
+             (check-equal "say hello"
+                          (entry-text (aref (session-entries (cockpit-session mode)) 0)))
+             ;; The box has the focus again for the next prompt.
+             (check (wait-until (lambda () (scripts-calling "focus")) :timeout 5))
+             ;; An empty box sends nothing, by any of the keys.
+             (let ((entries (length (session-entries (cockpit-session mode)))))
+               (check (press mode "return" "control"))
+               (check (press mode "return" "super"))
+               (sleep 0.5)
+               (check-equal entries (length (session-entries (cockpit-session mode))))))
+        (setf nyxt-llm-cockpit::*prompt-taker* nil)))))
 
 ;;; Opening the page
 
