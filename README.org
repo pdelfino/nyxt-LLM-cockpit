@@ -1,0 +1,118 @@
+#+TITLE: nyxt-LLM-cockpit
+#+OPTIONS: toc:nil
+
+An LLM cockpit for the [[https://github.com/atlas-engineer/nyxt][Nyxt]] browser: talk to a coding agent from a buffer, with the transcript as a document and every permission answered from the keyboard. The first agent it drives is [[https://docs.claude.com/en/docs/claude-code/overview][Claude Code]].
+
+It is a Nyxt extension in Common Lisp. Not affiliated with Atlas Engineer or with Anthropic.
+
+* Where it comes from
+
+[[https://github.com/pdelfino/nemesis][Nemesis]] is a keyboard-driven cockpit for Claude Code on Electron that grows toward a Nyxt-style browser. This is the same idea from the other side. Nyxt 5 already is the browser, a Common Lisp image with Chromium inside, so here the cockpit is an extension of it.
+
+* Status
+
+A first slice, written on 2026-NOVEMBER-24 against Nyxt 5.1.0 (the latest release, and its macOS app) and Claude Code 2.1.331. Read the rows about the macOS app and the window before you install it.
+
+| Piece                                               | State                                                         |
+|-----------------------------------------------------+---------------------------------------------------------------|
+| Drive Claude Code from Lisp (stream, tools, cost)   | Works. Tested against a stand-in and against the real program |
+| Ask before a tool runs, allow once or for a session | Works. Same tests                                             |
+| Interrupt a turn                                    | Works. Same tests                                             |
+| The buffer, its mode, its commands and keys         | Tested inside Nyxt's core with no renderer                    |
+| Loading into the Nyxt 5.1.0 macOS app               | The first try failed on a fault in how that app sets up ASDF. With the repair in the install lines below, the extension loaded in the app on 2026-NOVEMBER-24. The last install line, which finds the extension in the extensions directory, is tested in a model of the app, *not yet in the app* |
+| The same in a real Nyxt window                      | Seen on 2026-NOVEMBER-25: the page draws as designed and typing reaches the box. A first try to send did not go through, and Return was made the send key after it. *No prompt has gone through from a window yet*: the transcript and the permission question are unchecked |
+| Sessions list and resume, Markdown, side panel, MCP | Not started. See [[file:docs/architecture.org][docs/architecture.org]]                         |
+
+* Install
+
+You need Nyxt 5.1.0 and Claude Code, installed and logged in (=claude= works in a terminal). The extension holds no key and asks for none.
+
+Nyxt loads extensions from its extensions directory:
+
+#+begin_src sh
+git clone https://github.com/pdelfino/nyxt-LLM-cockpit ~/.local/share/nyxt/extensions/nyxt-llm-cockpit
+#+end_src
+
+Then load it from =~/.config/nyxt/config.lisp=:
+
+#+begin_src lisp
+;; Nyxt 5.1.0's macOS app gives ASDF an empty path for Nyxt's own source, and
+;; ASDF then fails on the first extension it is asked for. These lines give it
+;; the extensions directory alone. Where Nyxt is not affected they change nothing.
+(defun extensions-registry ()
+  `(:source-registry
+    (:tree ,(files:expand *extensions-directory*))
+    :inherit-configuration))
+(setf asdf:*default-source-registries*
+      (substitute 'extensions-registry 'nyxt-source-registry
+                  asdf:*default-source-registries*))
+(asdf:clear-configuration)
+
+(define-nyxt-user-system-and-load "nyxt-user/nyxt-llm-cockpit-proxy"
+  :depends-on ("nyxt-llm-cockpit"))
+#+end_src
+
+Without the first lines, the macOS app of Nyxt 5.1.0 stops reading the config with =Invalid pathname #P"": Expected an absolute pathname= (the line is in Nyxt's log) and the extension is not loaded. =make nyxt-install-test= runs these exact lines in a Nyxt set up like that app. In the app itself the repair has run once, with the extension loaded by its path. The last line has run only in the model.
+
+* Use
+
+| Command                | Keys                                             | What it does                                |
+|------------------------+--------------------------------------------------+---------------------------------------------|
+| =claude=               |                                                  | Open the cockpit buffer                     |
+| =send-prompt=          | =return=, =C-return=, =S-return=, Emacs =C-c C-c= | Send what is typed                          |
+| =interrupt-claude=     | Emacs =C-c C-k=, vi normal =C-c=                 | Stop the turn that is running               |
+| =new-claude-session=   |                                                  | End the conversation and start an empty one |
+| =set-claude-directory= |                                                  | Choose the directory Claude Code works in   |
+
+Return sends. Shift-Return starts a new line in the box. The keys are in Nyxt's notation, where =S-= is super (the Command key on a Mac) and =s-= is shift, so =S-return= is Command-Return.
+
+With vi keys, send from the normal state: in the insert state Nyxt gives every key to the page.
+
+Before a tool runs, the prompt buffer asks. Type =y= to allow it once, =a= to allow the same thing for the rest of the session. Anything else, an empty answer and a cancelled prompt included, is no. An =a= is kept in memory for the session and is never written to a settings file.
+
+Claude Code runs as you already run it: your login, your settings, your hooks, skills and MCP servers. A tool your own settings allow outright is not asked about here either.
+
+Settings are slots of =cockpit-mode=. Name them in full, package included:
+
+#+begin_src lisp
+(define-configuration nyxt-llm-cockpit:cockpit-mode
+  ((nyxt-llm-cockpit:model "sonnet")
+   (nyxt-llm-cockpit:working-directory "~/projects/my-project/")))
+#+end_src
+
+=program=, =model=, =permission-mode=, =setting-sources=, =extra-arguments=, =working-directory= and =flush-interval= are described in the mode's documentation (=describe-class= in Nyxt).
+
+* How it is built
+
+Three layers, each tested at its own cost. The long version is [[file:docs/architecture.org][docs/architecture.org]].
+
+| System                   | What it is                                           | Depends on               |
+|--------------------------+------------------------------------------------------+--------------------------|
+| =nyxt-llm-cockpit/agent= | The Claude Code program as a session of entries      | SBCL and ASDF only       |
+| =nyxt-llm-cockpit/view=  | A session as HTML, a status line and one page script | =nyxt-llm-cockpit/agent= |
+| =nyxt-llm-cockpit=       | The mode, the internal page and the commands         | Nyxt                     |
+
+Claude Code is not embedded. The =claude= program is started headless and spoken to over its line-delimited JSON, the way Anthropic's Agent SDK does it, with no Node and no library on the Lisp side.
+
+Three rules hold it together, each with tests:
+
+1. Lisp talks to the page, the page never talks to Lisp. The page has no callbacks and no click handlers.
+2. A tool runs only after an answer the user typed.
+3. Text from the model, from a tool or from the user reaches the page as text. It is escaped or set as text content, never written as markup.
+
+* Test
+
+#+begin_src sh
+make test        # agent and view, plain SBCL: no Nyxt, no network, no cost
+make nyxt-deps   # once: Nyxt 5.1.0 and its libraries into .nyxt/ (needs ocicl, libfixposix, pkg-config)
+make nyxt-test   # every test inside Nyxt's core, no renderer, no window
+make nyxt-install-test   # the install lines above, in a Nyxt set up like the packaged app
+make check       # all three: the gate before a commit
+make real        # three Haiku turns against the real Claude Code, under a cent
+#+end_src
+
+=tests/fake-claude= is a shell script that plays Claude Code: it speaks the same line-delimited JSON, cut down from frames the real program printed, and records what it was sent.
+
+* License
+
+BSD-3-Clause, like Nyxt and like Nemesis, so code can move between the three.

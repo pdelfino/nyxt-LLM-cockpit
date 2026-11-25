@@ -1,0 +1,226 @@
+#+TITLE: nyxt-LLM-cockpit: architecture
+#+OPTIONS: toc:2
+
+Written 2026-NOVEMBER-24 against Nyxt 5.1.0 (released 2026-NOVEMBER-23) and Claude Code 2.1.331. Every claim about Nyxt names the file it was read in, in the checkout at =~/projects/nyxt=. Every claim about the Claude Code protocol was observed on that day by driving the real program.
+
+* The question
+
+Nemesis (Electron and TypeScript) is a cockpit for Claude Code that grows toward a Nyxt-style browser. Its plan, =pdelfino/nemesis#43=, listed and set aside an option D: "Common Lisp brain with a Chromium face", for want of a maintained bridge. Nyxt 5 is that option, maintained by someone else: a Common Lisp image with Chromium embedded through CEF (=source/renderer/cef.lisp=, the Electron renderer was removed on 2026-NOVEMBER-04).
+
+So the question turns around. Instead of a cockpit that grows a browser, can the browser grow the cockpit?
+
+* What Nyxt has today
+
+Nothing like a cockpit. The tree has no reference to an LLM, to Claude or to MCP. The three nearest things:
+
+| What                                 | Where                                            | Why it is not a cockpit                                                                 |
+|--------------------------------------+--------------------------------------------------+-----------------------------------------------------------------------------------------|
+| A terminal in a buffer               | =source/mode/terminal.lisp=, =libraries/terminal= | It can run =claude=, as a terminal program inside an emulator: the thing Nemesis avoids |
+| A socket that evaluates Lisp         | =source/start.lisp=, =remote-execution-p=        | An outside agent can drive Nyxt, with no permission model at all                         |
+| "AI" in the project's own words      | =libraries/analysis=                             | Text ranking and clustering. The maintainers said so in =atlas-engineer/nyxt#3386=      |
+
+What it does have, most of it added in November 2026, is every part a cockpit is made of:
+
+| Part                          | Nyxt                                                            | File                                   |
+|-------------------------------+-----------------------------------------------------------------+----------------------------------------|
+| A buffer drawn from Lisp      | =define-internal-page-command-global=, with a page mode         | =source/renderer-script.lisp=          |
+| Behaviour scoped to a buffer  | =define-mode=, =enable=, =disable=, keyscheme maps              | =source/mode.lisp=                     |
+| Commands with keys            | =define-command=, dispatched to the mode that owns them         | =source/command.lisp=                  |
+| A question to the user        | =prompt1= with =prompter:raw-source=                            | =source/prompt-buffer.lisp=            |
+| Changing a page from Lisp     | =ffi-buffer-evaluate-javascript-async=, safe from any thread    | =source/renderer/cef.lisp=             |
+| A side panel                  | =define-buffer-panel=                                           | =source/panel.lisp=                    |
+| Loading code that is not core | the extensions directory, =define-nyxt-user-system-and-load=    | =source/configuration.lisp=            |
+| Cleaning up                   | =buffer-delete-hook=, =before-exit-hook=                        | =source/buffer.lisp=, =source/browser.lisp= |
+
+=terminal-mode= is the closest relative in shape: a child process whose output is drawn in a buffer. The cockpit is the same shape with a structured protocol in place of a terminal.
+
+* Extension or core
+
+An extension, in its own repository. The reasons, in order of weight:
+
+1. Part of Nyxt's community does not want LLM features in the browser and said so when the FAQ used the word "AI" (=atlas-engineer/nyxt#3386=). An extension is installed by the people who want it and costs the others nothing.
+2. Nyxt is moving fast: about 220 commits in the month before 5.1.0, two releases eight days apart, renames across the tree. An extension pins a release and tests against it (=make nyxt-test=). A core feature would wait on review for every change.
+3. The safety rules below are this project's own, and stricter than a browser page usually needs. They are easier to keep in a repository that has them as its rules.
+4. Nothing is lost. The two lower layers do not know Nyxt exists, and the top layer is one file written the way Nyxt's modes are. If upstream ever wants it, =source/agent/= becomes a library beside =libraries/terminal= and =source/cockpit.lisp= becomes a mode beside =source/mode/terminal.lisp=. Nyxt's developer manual asks contributors to arrive with an implementation, not a discussion; this is one.
+
+* The layers
+
+#+begin_example
+ keys ──▶ Nyxt input dispatch ──▶ commands ──┐
+                                             ▼
+┌─────────────────────── nyxt-llm-cockpit (needs Nyxt) ──────────────────────┐
+│ cockpit-mode    owns the session, the settings, the two cleanup hooks      │
+│ claude          the internal page: transcript, status line, a textarea     │
+│ send-prompt     asks the page for the typed text, sends it                 │
+│ listener        session event ──▶ one script call into the page            │
+│ permissions     request ──▶ own thread ──▶ prompt buffer ──▶ typed answer  │
+└──────────────┬──────────────────────────────────────────┬──────────────────┘
+               │ strings                                  │ calls
+┌──────────────▼─────────────┐              ┌─────────────▼──────────────────┐
+│ nyxt-llm-cockpit/view      │              │ nyxt-llm-cockpit/agent         │
+│ entry ──▶ escaped HTML     │◀── entries ──│ session: entries, requests,    │
+│ session ──▶ status line    │              │ state, cost, context           │
+│ script-call: JSON literals │              │ one reader thread per session  │
+│ the page script (no calls  │              │ JSON reader and writer         │
+│ back into Lisp)            │              │ child process, three pipes     │
+└────────────────────────────┘              └─────────────┬──────────────────┘
+                                                          │ one JSON object per line
+                                                   ┌──────▼──────┐
+                                                   │   claude    │ your login, settings,
+                                                   │  (headless) │ hooks, skills, MCP
+                                                   └─────────────┘
+#+end_example
+
+** nyxt-llm-cockpit/agent: the program as a session
+
+Nemesis hosts Claude Code through the TypeScript Agent SDK. The SDK is a client of the =claude= program: it starts it headless and exchanges one JSON object per line on its standard streams. Lisp does the same and needs no Node:
+
+#+begin_example
+claude -p --output-format stream-json --input-format stream-json --verbose \
+       --include-partial-messages --permission-prompt-tool stdio
+#+end_example
+
+The frames, as observed:
+
+| Direction   | Frame                                                   | What the session does with it                                         |
+|-------------+---------------------------------------------------------+-----------------------------------------------------------------------|
+| to program  | =user= with a text block                                | =send-prompt=. A prompt sent mid-turn is queued by the program        |
+| from program | =system= / =init=                                      | Session id, model, version, directory. Announced once                 |
+| from program | =stream_event= (block start, deltas, stop)             | A live entry whose text grows                                         |
+| from program | =assistant=                                            | The finished block: settles the live entry, or makes one              |
+| from program | =user= with =tool_result=                              | The result and status of the matching tool entry                      |
+| from program | =control_request= / =can_use_tool=                     | A =permission-request=. The tool entry waits                          |
+| to program  | =control_response= with =allow= or =deny=               | =respond-permission=. The tool's input goes back byte for byte        |
+| from program | =control_cancel_request=                               | The request is withdrawn and can no longer be answered                |
+| to program  | =control_request= / =interrupt=                         | =interrupt-turn=                                                      |
+| from program | =result=                                               | End of turn: cost so far, duration, context window. State goes idle   |
+| from program | anything else                                          | Read and dropped, so a newer program does not break an older cockpit  |
+
+Decisions worth knowing:
+
+- *One file knows the frames.* =source/agent/session.lisp= turns them into entries. Everything above reads entries. Nemesis has the same rule in =src/main/agent/events.ts=. It is also the seam where a second engine fits: a client of the Agent Client Protocol would produce the same entries from other agents.
+- *No libraries.* The JSON reader and writer are in =source/agent/json.lisp=, the process is =uiop:launch-program=, threads are SBCL's. The layer loads in a plain SBCL and in the stock Nyxt binary with nothing to install. The JSON mapping loses nothing (=false=, =null= and =[]= stay distinct), because an allowed tool's input is sent back unchanged.
+- *The reader never waits for the user.* One thread per session reads lines and applies them under the session lock. The events a change produced are collected and handed to the listeners after the lock is released, so a listener that draws in the browser or calls back into the session holds nothing up. Writes to the program also happen outside the lock, one line at a time, so the program and the cockpit cannot block each other on full pipes.
+- *"Always" means this session.* The program offers rules to stop asking. The cockpit sends back the first one with its destination changed to =session=, so an =a= never edits a settings file.
+- *An unknown request is refused, not ignored.* The program waits for an answer to every control request. One this client does not know gets an error answer and the turn goes on.
+- *The program is found even from the Dock.* A graphical application on macOS starts with a short =PATH=, so =find-program= also looks in =~/.local/bin= and the other usual places.
+- *No key, ever.* The program uses its own login. The extension reads no credential and has no setting for one.
+
+** nyxt-llm-cockpit/view: a session as strings
+
+Functions from data to strings, tested without Nyxt:
+
+- =entry-html=: one entry as HTML. Every piece of text passes through =escape-html=.
+- =status-text=: the line under the transcript: state, model, directory, cost, context.
+- =script-call=: a call into the page with its arguments written as JSON literals, on one line.
+- =*runtime-script*=: the page's whole script. It defines seven functions that change the page (=append=, =replace=, =text=, =status=, =take=, =restore=, =focus=) and starts nothing.
+- =parse-permission-answer=: what the user typed, as =:allow=, =:always= or =:deny=.
+
+The transcript is plain text in this slice: a reply is shown as it was written, Markdown marks and all.
+
+** nyxt-llm-cockpit: the cockpit
+
+=source/cockpit.lisp= is the only file that names Nyxt.
+
+- =claude= is an internal page with =cockpit-mode= as its page mode, the pattern of =list-messages= and =terminal=. The page is a transcript, a status line and a textarea.
+- The session lives in the mode, not in the page. Nyxt writes an internal page by setting the document's HTML, so the page can be drawn again at any time (a reload, a theme change) from =session-entries=, and nothing is lost.
+- A new entry is appended to the page. Text that is still arriving replaces only its own text node, at most every =flush-interval= seconds. A finished entry and any change to a tool entry replace that one element. The transcript is never redrawn whole while a turn runs, so a selection or a scroll position elsewhere survives.
+- =send-prompt= asks the page for what is typed (a synchronous script call that also empties the field) and gives it back if it could not be sent.
+- A permission request starts a thread that asks in the prompt buffer, one question at a time. The session's reader goes on reading meanwhile.
+- The program is its own process. It is ended when the mode is disabled, when the buffer is deleted (=buffer-delete-hook=) and when Nyxt quits (=before-exit-hook=), the three places =terminal-mode= covers.
+
+* Safety
+
+Nemesis has a threat model (=SECURITY.org= in that repository). The part that matters most here is its T4: text from a web page must never steer the agent, and nothing on a page may approve a tool. This slice gives the agent no browser tools, so a page has no path to the model. What remains is the cockpit's own page and prompt, and three rules cover them.
+
+** Rule 1: Lisp talks to the page, the page never talks to Lisp
+
+A Nyxt page can call Lisp: a button on an internal page runs a callback. The cockpit's page uses none of that. It shows text nobody here wrote: what a model said, what a tool returned and, once the agent can read the browser, what a web page contains. Such a page is given nothing to call: no callbacks, no =onclick= and no link into Lisp. If markup or script ever did get onto it, there would be nothing for it to reach. Commands run from keys, which reach Lisp through Nyxt's input dispatch and not through the page, and the typed prompt is fetched by Lisp.
+
+The rule costs clickable buttons. It is tested: =opening-the-page-starts-nothing= reads the page for =<script=, =onclick= and =lisp:=, and =the-runtime-script-only-receives= reads the script for =fetch(= and its relatives.
+
+** Rule 2: a tool runs only after an answer the user typed
+
+The question is asked with =prompter:raw-source=, as free text. =y= or =yes= allows once, =a= or =always= allows for the session, and every other answer denies: an empty one, a cancelled prompt, a typo. A list of choices would be more comfortable, but Return on a list accepts whatever row is highlighted, and a yes should never be one keypress away from a question the user has not read. A typed word is a deliberate act and comes from the keyboard and from nowhere else.
+
+** Rule 3: text is data
+
+Whatever the model, a tool or the user wrote reaches the page through =escape-html= or as a JSON literal that the page sets as text content. The tests feed every kind of entry a script tag and look for it in the output.
+
+** Opening the page does nothing
+
+Nyxt's documentation of internal pages warns that any third-party page can load a =nyxt:= URL, so nothing sensitive may run when one is drawn. The =claude= page takes no parameters and has no side effect: the program starts with the first prompt the user sends, never on load. =the-page-ignores-what-a-url-carries= holds this.
+
+** What this slice does not protect
+
+- Claude Code's own tools (=WebFetch=, =Bash=) work as they do in a terminal, under Claude Code's own permission rules. A user whose settings allow =Bash= outright is never asked, here as there.
+- The prompt buffer and the rest of Nyxt's interface are Nyxt's. This extension uses them as they are.
+
+* What is tested, and how
+
+| Layer   | Run by           | Against                                         | Tests |
+|---------+------------------+-------------------------------------------------+-------|
+| agent   | =make test=      | =tests/fake-claude=, a shell script             |    21 |
+| view    | =make test=      | the same                                        |    15 |
+| cockpit | =make nyxt-test= | Nyxt 5.1.0's core loaded from source, no window |    20 |
+| install | =make nyxt-install-test= | the same core, with ASDF set up like the packaged app |  1 |
+| agent   | =make real=      | the real program, three Haiku turns             |     1 |
+
+The cockpit tests replace the page with a list: every script the cockpit would run is collected and read. They prove what the page is told. They do not prove what the page then shows, how keys feel, or that focus lands where it should: that needs a window, and it is the first open item.
+
+** What the first run in the app found
+
+On 2026-NOVEMBER-24 the extension met the packaged macOS app of Nyxt 5.1.0 for the first time, and did not load. Every test above was green, because every test loads the cockpit by its path into a Nyxt that was itself loaded from source.
+
+The app differs in what ASDF sees. Its systems are immutable, and Nyxt's source is not on disk, so =*source-directory*= resolves to an empty path. =nyxt-source-registry= adds the source directory to ASDF's registry when the path is /not/ absolute, so in the app it adds =(:tree #P"")=. ASDF rejects that entry the first time any system is looked up, with =Invalid pathname #P"": Expected an absolute pathname=, and it leaves its registry empty, so the extensions directory is not searched afterwards either. Any extension loaded by name fails this way in that app, not only this one.
+
+The install lines of =README.org= put a registry function with the extensions directory alone in place of Nyxt's. =tests/run-install.lisp= reads those lines out of the README and runs them, the way Nyxt reads a config, in a Lisp arranged as the app is: immutable systems, no source on disk, the extension reachable only through the extensions directory. It first checks that the lookup fails without them, so the day Nyxt fixes this the test says the repair can go.
+
+It is a model of the app's ASDF setup, read from Nyxt's source and from the app's log. It is not the app. Whether the lines work in the app itself is known only once someone has run them there.
+
+** What the second run in the app found
+
+Later the same day the app was started again, with the repair in front of the two forms that had failed: =asdf:load-asd= on this repository's =.asd= file, then =asdf:load-system=. This time the extension compiled and loaded, and the =claude= page opened as the first buffer. So the repair works in the app. The README's last install line, which finds the extension through the extensions directory, has still run only in the model.
+
+That run also carried a probe: a thread in the trial's config that asks the page every few seconds what it holds (counts, sizes and states, never text) and writes the answer to Nyxt's log when it changes. One second after the page loaded it answered:
+
+#+begin_example
+{"ready":"complete","runtime":"object","input":true,"typed":0,"focus":"cockpit-input",
+ "status":"ready · haiku · ~/projects/nyxt-LLM-cockpit","state":"state-ready","entries":[],
+ "view":[1576,933],"inputBox":[320,832,960,96],"colors":["rgb(248, 248, 248)","rgb(0, 0, 0)"]}
+#+end_example
+
+What that shows, in the app and not in a model:
+
+- The page drew in the theme's colors, with the status line and the box (960 by 96) at the bottom of a 1576 by 933 view.
+- The page script was installed by one asynchronous call from Lisp, and a second one, =focus=, made the box the page's focused element. The page has no =autofocus=, so nothing else could have.
+- A synchronous call made off the interface thread comes back with a string. The probe is such a call, and so is the one =send-prompt= uses to take the typed text.
+
+What it does not show: the answer stayed the same for the hour the probe ran, and Claude Code has no session on record for that directory, so no prompt was sent. Typing, a prompt sent from a window, the transcript as it streams, the permission question and every key are still unchecked. The page has been read by a probe, not looked at: whether the keyboard reaches the box, and how it all looks, nobody has reported.
+
+** What the third run found: the send key
+
+On 2026-NOVEMBER-25 the window was looked at for the first time. The page is as designed, and typing reaches the box. Sending did not work.
+
+The logs of that run say the send command never ran: no line from it, no session, the text still in the box. At the time one chord sent, Control-Return. Given that chord, Nyxt's own dispatcher runs the command, in the tests. So either another key was pressed, as Return is in every other chat box, or the chord does not reach Nyxt in the app. Which one is not settled. The next run records the keys Nyxt is given.
+
+What changed is the key. Return sends, as it does in Claude Code and wherever else people type to a model, and Control-Return and Command-Return send too. Shift-Return and Option-Return are not bound, so Nyxt passes them on and the box starts a new line. Nyxt takes a bound key before the page sees it, and it does not fall back from an unbound chord to the plain key, which is what makes this split possible without the page calling Lisp.
+
+=return-sends-what-is-typed= now presses the keys through =dispatch-key-press=, the function a renderer calls, in a buffer with the default keyscheme, and follows the prompt to the program. The first version of the change failed that test: in Nyxt's notation =S-= is super and =s-= is shift, the reverse of Emacs, and =s-return= had bound Shift-Return. A lookup in the mode's keymap alone would not have caught it.
+
+* From here
+
+In the order that makes the next step cheapest. Each is a slice with its own files.
+
+| Step | What                                                    | Notes                                                                                                                        |
+|------+---------------------------------------------------------+------------------------------------------------------------------------------------------------------------------------------|
+|    1 | See it in a window and fix what only a window shows     | The one thing no test here covers                                                                                            |
+|    2 | Sessions: list, name, resume                            | Claude Code already saves sessions. =--resume= continues one. An index through =nfiles=, a prompt-buffer source to pick from |
+|    3 | Markdown and code blocks                                | A small renderer that escapes first. No library in the Nyxt image does it                                                    |
+|    4 | Option dialogs and plan approval                        | =AskUserQuestion= is refused with a hint today. Rule 2 says typed answers                                                    |
+|    5 | The side panel                                          | =define-buffer-panel= works, but =panel-mode= binds =+= and =-=, which a text field needs. A keymap hook, or a patch upstream |
+|    6 | Context and cost in the status bar, model and effort    | =mode-status= is the hook. The numbers are already in the session                                                            |
+|    7 | The door: Nyxt's commands and buffers as MCP tools      | Nemesis ADR 0007 and 0008 ported: a Unix socket owned by the user, a token, three classes of tool, page text labeled untrusted |
+|    8 | A second engine over the Agent Client Protocol          | Other agents, and the framing upstream would want                                                                            |
+
+Step 7 is where the cockpit stops being a chat window in a browser and becomes what Nemesis is for: the agent inside can read and drive the browser, under rules. It is also where page text first reaches the model, so it starts with a threat model and not with code.

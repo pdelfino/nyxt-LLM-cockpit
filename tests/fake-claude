@@ -1,0 +1,171 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: Pedro Delfino
+# SPDX-License-Identifier: BSD-3-Clause
+#
+# A stand-in for the Claude Code program, for tests that must not reach the
+# network or spend anything. It speaks the same line-delimited JSON on its
+# standard streams. The frames are cut down from ones the real program
+# (2.1.331) printed on 2026-11-24.
+#
+# Usage: fake-claude [the flags the cockpit passes] --scenario NAME --log FILE
+# Every line it reads, and its own arguments, are appended to FILE.
+
+scenario=hello
+log=/dev/null
+arguments="$*"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --scenario) scenario=$2; shift ;;
+        --log) log=$2; shift ;;
+    esac
+    shift
+done
+
+printf 'ARGV %s\n' "$arguments" >> "$log"
+
+emit() {
+    printf '%s\n' "$1"
+}
+
+# Read one line from the cockpit into $line and record it.
+take() {
+    if IFS= read -r line; then
+        printf 'IN %s\n' "$line" >> "$log"
+        return 0
+    fi
+    printf 'EOF\n' >> "$log"
+    return 1
+}
+
+init() {
+    emit '{"type":"system","subtype":"init","cwd":"/tmp/fake","session_id":"11111111-2222-3333-4444-555555555555","tools":["Bash","Read"],"mcp_servers":[],"model":"claude-fake-1","permissionMode":"default","claude_code_version":"0.0.0-fake","uuid":"u-init"}'
+}
+
+# say MESSAGE-ID PIECE... prints one streamed text block and its finished frame.
+say() {
+    id=$1
+    shift
+    whole=
+    emit "{\"type\":\"stream_event\",\"event\":{\"type\":\"message_start\",\"message\":{\"id\":\"$id\",\"role\":\"assistant\",\"content\":[]}},\"parent_tool_use_id\":null}"
+    emit '{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}},"parent_tool_use_id":null}'
+    for piece in "$@"; do
+        whole="$whole$piece"
+        emit "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"$piece\"}},\"parent_tool_use_id\":null}"
+    done
+    emit "{\"type\":\"assistant\",\"message\":{\"id\":\"$id\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"$whole\"}],\"usage\":{\"input_tokens\":2,\"cache_creation_input_tokens\":100,\"cache_read_input_tokens\":900,\"output_tokens\":8}},\"parent_tool_use_id\":null,\"session_id\":\"11111111-2222-3333-4444-555555555555\"}"
+    emit '{"type":"stream_event","event":{"type":"content_block_stop","index":0},"parent_tool_use_id":null}'
+    emit '{"type":"stream_event","event":{"type":"message_stop"},"parent_tool_use_id":null}'
+}
+
+# tool MESSAGE-ID TOOL-ID prints a streamed Bash call and its finished frame.
+tool() {
+    emit "{\"type\":\"stream_event\",\"event\":{\"type\":\"message_start\",\"message\":{\"id\":\"$1\",\"role\":\"assistant\",\"content\":[]}},\"parent_tool_use_id\":null}"
+    emit "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"$2\",\"name\":\"Bash\",\"input\":{}}},\"parent_tool_use_id\":null}"
+    emit '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"command\": \"touch marker.txt\"}"}},"parent_tool_use_id":null}'
+    emit "{\"type\":\"assistant\",\"message\":{\"id\":\"$1\",\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"$2\",\"name\":\"Bash\",\"input\":{\"command\":\"touch marker.txt\",\"description\":\"Create marker.txt\",\"flag\":false,\"none\":null,\"list\":[]}}],\"usage\":{\"input_tokens\":2,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":1000,\"output_tokens\":20}},\"parent_tool_use_id\":null}"
+    emit '{"type":"stream_event","event":{"type":"content_block_stop","index":0},"parent_tool_use_id":null}'
+}
+
+# result COST prints the frame that ends a turn.
+result() {
+    emit "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"duration_ms\":1200,\"num_turns\":1,\"result\":\"ok\",\"session_id\":\"11111111-2222-3333-4444-555555555555\",\"total_cost_usd\":$1,\"modelUsage\":{\"claude-fake-1\":{\"contextWindow\":200000}},\"terminal_reason\":\"completed\"}"
+}
+
+case "$scenario" in
+    hello)
+        take || exit 0
+        init
+        say msg_1 'Hello' ' from' ' Nyxt'
+        result 0.0025
+        take
+        ;;
+
+    two-turns)
+        take || exit 0
+        init
+        say msg_1 'First'
+        result 0.0025
+        take || exit 0
+        init
+        say msg_2 'Second'
+        result 0.0060
+        take
+        ;;
+
+    permission)
+        take || exit 0
+        init
+        tool msg_1 toolu_1
+        emit '{"type":"control_request","request_id":"req-1","request":{"subtype":"can_use_tool","tool_name":"Bash","display_name":"Bash","input":{"command":"touch marker.txt","description":"Create marker.txt","flag":false,"none":null,"list":[]},"description":"Create marker.txt","permission_suggestions":[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"touch:*"}],"behavior":"allow","destination":"localSettings"},{"type":"setMode","mode":"acceptEdits","destination":"session"}],"blocked_path":"/tmp/fake","tool_use_id":"toolu_1"}}'
+        take || exit 0
+        case "$line" in
+            *'"behavior":"allow"'*)
+                emit '{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"","is_error":false}]},"parent_tool_use_id":null}'
+                say msg_2 'done'
+                ;;
+            *)
+                emit '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"The user said no.","is_error":true,"tool_use_id":"toolu_1"}]},"parent_tool_use_id":null}'
+                say msg_2 'refused'
+                ;;
+        esac
+        result 0.0030
+        take
+        ;;
+
+    cancelled)
+        take || exit 0
+        init
+        tool msg_1 toolu_1
+        emit '{"type":"control_request","request_id":"req-1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"touch marker.txt"},"tool_use_id":"toolu_1"}}'
+        emit '{"type":"control_cancel_request","request_id":"req-1"}'
+        say msg_2 'never mind'
+        result 0.0030
+        take
+        ;;
+
+    question)
+        take || exit 0
+        init
+        emit '{"type":"control_request","request_id":"req-q","request":{"subtype":"can_use_tool","tool_name":"AskUserQuestion","input":{"questions":[{"question":"Which one?","header":"Pick","options":[{"label":"A","description":"first"},{"label":"B","description":"second"}],"multiSelect":false}]},"tool_use_id":"toolu_q"}}'
+        take || exit 0
+        say msg_1 'Which one do you want, A or B?'
+        result 0.002
+        take
+        ;;
+
+    interrupt)
+        take || exit 0
+        init
+        emit '{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_1","role":"assistant","content":[]}},"parent_tool_use_id":null}'
+        emit '{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}},"parent_tool_use_id":null}'
+        emit '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Counting: 1, 2"}},"parent_tool_use_id":null}'
+        take || exit 0
+        case "$line" in
+            *'"subtype":"interrupt"'*)
+                emit '{"type":"control_response","response":{"subtype":"success","request_id":"nyxt-1","response":{}}}'
+                emit '{"type":"result","subtype":"error_during_execution","is_error":true,"duration_ms":300,"num_turns":1,"total_cost_usd":0.001,"terminal_reason":"aborted_streaming"}'
+                ;;
+        esac
+        take
+        ;;
+
+    odd)
+        take || exit 0
+        init
+        emit 'this line is not JSON'
+        emit '{"type":"a_frame_from_the_future","payload":{"x":1}}'
+        emit '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"}}'
+        emit '{"type":"control_request","request_id":"req-9","request":{"subtype":"something_new","detail":1}}'
+        take || exit 0
+        emit '{"type":"assistant","message":{"id":"msg_1","role":"assistant","content":[{"type":"thinking","thinking":"","signature":"abc"},{"type":"text","text":"Still here: café 😀"}]},"parent_tool_use_id":null}'
+        result 0.001
+        take
+        ;;
+
+    crash)
+        take || exit 0
+        printf 'fake-claude: something broke\n' >&2
+        exit 3
+        ;;
+esac
+exit 0
